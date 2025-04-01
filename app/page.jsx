@@ -18,12 +18,20 @@ const DAI = "0x6B175474E89094C44Da98b954EedeAC495271d0F";
 const SWAP_ROUTER = "0xE592427A0AEce92De3Edee1F18E0157C05861564";
 const QUOTER = "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6";
 
+const TOKENS = [
+  { address: USDC, name: "USDC", color: "bg-purple-500", decimals: 6 },
+  { address: DAI, name: "DAI", color: "bg-yellow-500", decimals: 18 }
+];
+
 export default function SwapComponent() {
   const { address } = useAccount();
   const [amount, setAmount] = useState("");
-  const [quote, setQuote] = useState({ usdc: 0, dai: 0 });
+  const [ethAmount, setEthAmount] = useState("");
+  const [quote, setQuote] = useState(0);
   const { writeContractAsync } = useWriteContract();
   const [isSwapping, setIsSwapping] = useState(false);
+  const [selectedToken, setSelectedToken] = useState(TOKENS[0]);
+  const [activeTab, setActiveTab] = useState("swap"); // 'swap' or 'convert'
 
   // Common parameters
   const fee = 3000;
@@ -31,32 +39,18 @@ export default function SwapComponent() {
   const deadline = Math.floor(Date.now() / 1000) + 60 * 20;
 
   // Fetch quotes
-  const { data: usdcQuote } = useReadContract({
+  const { data: tokenQuote , refetch} = useReadContract({
     address: QUOTER,
     abi: Quoter_abi,
     functionName: "quoteExactInputSingle",
     args: [
       WETH,
-      USDC,
+      selectedToken.address,
       fee,
       amount ? ethers.parseUnits(amount, 18) : 0n,
       sqrtPriceLimitX96
     ],
-    enabled: !!amount
-  });
-
-  const { data: daiQuote } = useReadContract({
-    address: QUOTER,
-    abi: Quoter_abi,
-    functionName: "quoteExactInputSingle",
-    args: [
-      WETH,
-      DAI,
-      fee,
-      amount ? ethers.parseUnits(amount, 18) : 0n,
-      sqrtPriceLimitX96
-    ],
-    enabled: !!amount
+    enabled: !!amount && activeTab === "swap"
   });
 
   // Fetch balances
@@ -84,38 +78,33 @@ export default function SwapComponent() {
     enabled: !!address,
   });
 
-  // Update quotes when data changes
+  // Update quote when data changes
   useEffect(() => {
-    if (usdcQuote && daiQuote) {
-      setQuote({
-        usdc: parseFloat(ethers.formatUnits(usdcQuote, 6)),
-        dai: parseFloat(ethers.formatUnits(daiQuote, 18))
-      });
+    if (tokenQuote) {
+      setQuote(parseFloat(ethers.formatUnits(tokenQuote, selectedToken.decimals)));
     }
-  }, [usdcQuote, daiQuote]);
+  }, [tokenQuote, selectedToken]);
 
   // Convert balances to readable format
   const wethBalance = wethBalanceData ? parseFloat(formatEther(wethBalanceData)) : 0;
-  const usdcBalance = usdcBalanceData ? parseFloat(usdcBalanceData) / 10 ** 6 : 0;
+  const usdcBalance = usdcBalanceData ? parseFloat(ethers.formatUnits(usdcBalanceData, 6)) : 0;
   const daiBalance = daiBalanceData ? parseFloat(formatEther(daiBalanceData)) : 0;
 
-  const handleSwap = async (tokenOut) => {
+  const handleSwap = async () => {
     if (!amount || !address || isSwapping) return;
 
     try {
       setIsSwapping(true);
       const amountIn = ethers.parseUnits(amount, 18);
-      const currentQuote = tokenOut === USDC ? usdcQuote : daiQuote;
-      const decimals = tokenOut === USDC ? 6 : 18;
 
-      if (!currentQuote) {
+      if (!tokenQuote) {
         throw new Error("Could not get price quote");
       }
 
       // Calculate slippage (1%)
       const slippage = 1;
-      const amountOutMinimum = BigInt(currentQuote) - 
-        (BigInt(currentQuote) * BigInt(slippage * 100)) / 10000n;
+      const amountOutMinimum = BigInt(tokenQuote) - 
+        (BigInt(tokenQuote) * BigInt(slippage * 100)) / 10000n;
 
       // First approve the router to spend WETH
       await writeContractAsync({
@@ -132,7 +121,7 @@ export default function SwapComponent() {
         functionName: "exactInputSingle",
         args: [{
           tokenIn: WETH,
-          tokenOut: tokenOut,
+          tokenOut: selectedToken.address,
           fee: fee,
           recipient: address,
           deadline: deadline,
@@ -144,6 +133,7 @@ export default function SwapComponent() {
 
       // Refresh balances
       await Promise.all([refetchWETH(), refetchUSDC(), refetchDAI()]);
+      setAmount("");
     } catch (error) {
       console.error("Swap failed:", error);
     } finally {
@@ -152,11 +142,11 @@ export default function SwapComponent() {
   };
 
   const convertETHtoWETH = async () => {
-    if (!amount || !address || isSwapping) return;
+    if (!ethAmount || !address || isSwapping) return;
 
     try {
       setIsSwapping(true);
-      const amountIn = parseEther(amount);
+      const amountIn = parseEther(ethAmount);
       await writeContractAsync({
         address: WETH,
         abi: Weth_abi,
@@ -165,6 +155,7 @@ export default function SwapComponent() {
         value: amountIn,
       });
       await refetchWETH();
+      setEthAmount("");
     } catch (error) {
       console.error("ETH to WETH conversion failed:", error);
     } finally {
@@ -177,7 +168,7 @@ export default function SwapComponent() {
       <div className="w-full max-w-md p-6 rounded-2xl shadow-lg border border-gray-700 bg-gray-850">
         <div className="space-y-6">
           <div className="flex items-center justify-between">
-            <h1 className="text-2xl font-bold text-white">Swap Tokens</h1>
+            <h1 className="text-2xl font-bold text-white">Token Exchange</h1>
             <ConnectKitButton className="rounded-full bg-gray-700 text-white hover:bg-gray-600 transition-colors" />
           </div>
           
@@ -187,62 +178,132 @@ export default function SwapComponent() {
             </div>
           )}
 
-          <div className="space-y-4">
-            <div className="bg-gray-800 p-4 rounded-xl border border-gray-700">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-gray-400">From</span>
-                <div className="flex items-center space-x-2">
-                  <div className="w-6 h-6 bg-blue-500 rounded-full" />
-                  <span className="text-sm font-medium text-white">WETH</span>
-                  <ChevronDown className="w-4 h-4 text-gray-400" />
+          {/* Tab Navigation */}
+          <div className="flex border-b border-gray-700">
+            <button
+              onClick={() => setActiveTab("swap")}
+              className={`flex-1 py-2 font-medium ${activeTab === "swap" ? "text-white border-b-2 border-green-500" : "text-gray-400"}`}
+            >
+              Swap
+            </button>
+            <button
+              onClick={() => setActiveTab("convert")}
+              className={`flex-1 py-2 font-medium ${activeTab === "convert" ? "text-white border-b-2 border-blue-500" : "text-gray-400"}`}
+            >
+              Convert ETH
+            </button>
+          </div>
+
+          {activeTab === "swap" ? (
+            <div className="space-y-4">
+              <div className="bg-gray-800 p-4 rounded-xl border border-gray-700">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm text-gray-400">From</span>
+                  <div className="flex items-center space-x-2">
+                    <div className="w-6 h-6 bg-blue-500 rounded-full" />
+                    <span className="text-sm font-medium text-white">WETH</span>
+                  </div>
+                </div>
+                <input
+                  type="number"
+                  placeholder="0.0"
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                  onBlur={refetch}
+                  className="w-full text-2xl font-semibold border-0 bg-transparent p-0 focus-visible:ring-0 text-white placeholder-gray-500"
+                />
+                <div className="text-xs text-gray-400 mt-1">
+                  Balance: {wethBalance.toFixed(4)} WETH
                 </div>
               </div>
-              <input
-                type="number"
-                placeholder="0.0"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                className="w-full text-2xl font-semibold border-0 bg-transparent p-0 focus-visible:ring-0 text-white placeholder-gray-500"
-              />
-            </div>
 
-            <div className="flex justify-center">
-              <button className="p-2 rounded-full bg-gray-700 hover:bg-gray-600 transition-colors">
-                <ArrowRightLeft className="w-5 h-5 text-gray-300" />
+              <div className="flex justify-center">
+                <button className="p-2 rounded-full bg-gray-700 hover:bg-gray-600 transition-colors">
+                  <ArrowRightLeft className="w-5 h-5 text-gray-300" />
+                </button>
+              </div>
+
+              <div className="bg-gray-800 p-4 rounded-xl border border-gray-700">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm text-gray-400">To</span>
+                  <div className="relative">
+                    <select
+                      value={selectedToken.address}
+                      onChange={(e) => {
+                        const token = TOKENS.find(t => t.address === e.target.value);
+                        if (token) setSelectedToken(token);
+                      }}
+                      className="appearance-none bg-gray-700 text-white rounded-md pl-3 pr-8 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-gray-600"
+                    >
+                      {TOKENS.map((token) => (
+                        <option key={token.address} value={token.address}>
+                          {token.name}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown className="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-300 pointer-events-none" />
+                  </div>
+                </div>
+                <div className="text-2xl font-semibold text-white">
+                  {quote ? quote.toFixed(selectedToken.decimals === 6 ? 2 : 4) : "0.00"} {selectedToken.name}
+                </div>
+              </div>
+
+              <button
+                onClick={handleSwap}
+                disabled={!amount || isSwapping}
+                className={`w-full h-12 text-lg rounded-xl ${selectedToken.address === USDC ? "bg-purple-600 hover:bg-purple-700" : "bg-yellow-600 hover:bg-yellow-700"} transition-colors disabled:opacity-50`}
+              >
+                {isSwapping ? "Swapping..." : `Swap to ${selectedToken.name}`}
               </button>
             </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="bg-gray-800 p-4 rounded-xl border border-gray-700">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm text-gray-400">From</span>
+                  <div className="flex items-center space-x-2">
+                    <div className="w-6 h-6 bg-gray-300 rounded-full" />
+                    <span className="text-sm font-medium text-white">ETH</span>
+                  </div>
+                </div>
+                <input
+                  type="number"
+                  placeholder="0.0"
+                  value={ethAmount}
+                  onChange={(e) => setEthAmount(e.target.value)}
+                  className="w-full text-2xl font-semibold border-0 bg-transparent p-0 focus-visible:ring-0 text-white placeholder-gray-500"
+                />
+              </div>
 
-            <div className="bg-gray-800 p-4 rounded-xl border border-gray-700">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-gray-400">To</span>
-                <div className="flex items-center space-x-2">
-                  <div className="w-6 h-6 bg-purple-500 rounded-full" />
-                  <span className="text-sm font-medium text-white">USDC/DAI</span>
-                  <ChevronDown className="w-4 h-4 text-gray-400" />
+              <div className="flex justify-center">
+                <div className="p-2 rounded-full bg-gray-700">
+                  <ArrowRightLeft className="w-5 h-5 text-gray-300" />
                 </div>
               </div>
-              <div className="text-2xl font-semibold text-white">
-                {quote.usdc.toFixed(2)} USDC / {quote.dai.toFixed(2)} DAI
-              </div>
-            </div>
-          </div>
 
-          <div className="space-y-2">
-            <button
-              onClick={() => handleSwap(USDC)}
-              disabled={!amount || isSwapping}
-              className="w-full h-12 text-lg rounded-xl bg-green-600 hover:bg-green-700 transition-colors disabled:opacity-50"
-            >
-              {isSwapping ? "Swapping..." : "Swap to USDC"}
-            </button>
-            <button
-              onClick={() => handleSwap(DAI)}
-              disabled={!amount || isSwapping}
-              className="w-full h-12 text-lg rounded-xl bg-yellow-600 hover:bg-yellow-700 transition-colors disabled:opacity-50"
-            >
-              {isSwapping ? "Swapping..." : "Swap to DAI"}
-            </button>
-          </div>
+              <div className="bg-gray-800 p-4 rounded-xl border border-gray-700">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm text-gray-400">To</span>
+                  <div className="flex items-center space-x-2">
+                    <div className="w-6 h-6 bg-blue-500 rounded-full" />
+                    <span className="text-sm font-medium text-white">WETH</span>
+                  </div>
+                </div>
+                <div className="text-2xl font-semibold text-white">
+                  {ethAmount || "0.0"} WETH
+                </div>
+              </div>
+
+              <button
+                onClick={convertETHtoWETH}
+                disabled={!ethAmount || isSwapping}
+                className="w-full h-12 text-lg rounded-xl bg-blue-600 hover:bg-blue-700 transition-colors disabled:opacity-50"
+              >
+                {isSwapping ? "Converting..." : "Convert ETH to WETH"}
+              </button>
+            </div>
+          )}
 
           <div className="mt-4 text-white">
             <h3 className="text-lg font-semibold mb-2">Your Balances:</h3>
@@ -260,16 +321,6 @@ export default function SwapComponent() {
                 <p>{daiBalance.toFixed(2)}</p>
               </div>
             </div>
-          </div>
-
-          <div className="mt-4">
-            <button
-              onClick={convertETHtoWETH}
-              disabled={!amount || isSwapping}
-              className="w-full h-12 text-lg rounded-xl bg-blue-600 hover:bg-blue-700 transition-colors disabled:opacity-50"
-            >
-              {isSwapping ? "Converting..." : "Convert ETH to WETH"}
-            </button>
           </div>
         </div>
       </div>
